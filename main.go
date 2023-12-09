@@ -1,16 +1,3 @@
-package main
-
-import (
-	"fmt"
-	"os"
-	// "os/signal"
-	"strconv"
-	// "sync"
-	"bufio"
-	// "syscall"
-	// tea "github.com/charmbracelet/bubbletea"
-)
-
 // type Model struct {
 // 	FilesProcessed  int
 // 	MinPrime        int
@@ -91,31 +78,121 @@ import (
 // 	p.Send(tea.KeyMsg{Type: tea.KeyRelease, Name: "q"})
 // }
 
+package main
+
+import (
+	"fmt"
+	"os"
+	// "os/signal"
+	"strconv"
+	"sync"
+	"bufio"
+	"runtime"
+	// "syscall"
+	// tea "github.com/charmbracelet/bubbletea"
+)
+
+var (
+	numbers = make(chan int)
+	largestPrime = -1
+	largestPrimeMutex sync.Mutex
+	smallestPrime = -1
+	smallestPrimeMutex sync.Mutex
+)
+
+
 func main() {
 	dirPath := "./rand"
 
 	files := getFiles(dirPath)
 
-	fmt.Print(files)
+	// fmt.Print(files)
 
-	numbers, err := readFiles(files)
-	if err != nil {
-		fmt.Println("Error reading files:", err)
-		os.Exit(1)
+	var consumer sync.WaitGroup
+	var producer sync.WaitGroup
+	var primality sync.WaitGroup
+	primes := make(chan int)
+
+
+	// Define the number of goroutines to use (e.g., 4 for quadrupling)
+	numGoroutines := 5
+
+	// Producer
+
+	for _,file := range files {
+		for i := 0; i < numGoroutines; i++ {
+			producer.Add(1)
+			go func(file string) {
+				defer producer.Done()
+				readFiles(file, numbers)
+			}(file)
+		}	
 	}
 
-	// fmt.Print(numbers)
-	primes := []int{}
-	for _, number := range numbers {
-		if isPrime(number) == true {
-			prime := number
-			primes = append(primes, prime)
-			// fmt.Println(primes)
-			largest, smallest := minMaxPrimes(primes)
-			fmt.Println("Largest:", largest, "Smallest: ", smallest)
-		}
+	go func() {
+		producer.Wait()
+		// close(numbers) //fileChannel
+	}()
+	// Consumer I
+	for i := 0; i < numGoroutines; i++ {
+		consumer.Add(1)
+		go func(workerID int) {
+			defer consumer.Done()
+            for j := workerID; ; j += numGoroutines {
+                // Receive value from the channel, break if the channel is closed
+                number := <-numbers
+				// number, more := <-numbers
+                // if !more {
+                //     break
+                // }
+
+                if isPrime(number) {
+                    primes <- number
+                }
+            }
+		}(i)
 	}
+
+	go func() {
+		consumer.Wait()
+		// close(primes)
+		// close(numbers) //fileChannel
+	}()
+
+
+
+	for i := 0; i < numGoroutines; i++ {
+		primality.Add(1)
+		go func(workerID int) {
+			defer primality.Done()
+            for k := workerID; ; k += numGoroutines {
+			// primeResults := []int{}
+			// primeResults = append(primeResults, prime)
+				minMaxPrimeschan(primes)
+            }
+		}(i)
+	}
+
+	// go func() {
+	// 	close(primes)
+	// 	close(numbers) 
+	// }()
+
+	go func() {
+		primality.Wait()
+	}()
+
+	fmt.Println("Largest:", largestPrime, "Smallest:", smallestPrime)
+	routines := runtime.NumGoroutine()
+	fmt.Println("Number of active goroutines:", routines)
+
 }
+
+// func incrementProgress() {
+// 	processedMutex.Lock()
+// 	numbersProcessed++
+// 	processedMutex.Unlock()
+// }
 
 // 📑 what files are in a given directory
 func getFiles(dirPath string) (the_files []string) {
@@ -127,34 +204,28 @@ func getFiles(dirPath string) (the_files []string) {
 }
 
 // Producer
-func readFiles(filePaths []string) ([]int, error) {
-	//Iterate over all the files in the directory given as an input list / array
-	//go into each file and read all of the lines, grabbing each number from each line
-	//this function should return all of the numbers from a single given file
-	var numbers []int
+func readFiles(file string, nums chan<- int) {
+	data, err := os.Open(file)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer data.Close()
 
-	for _, filePath := range filePaths {
-		file, err := os.Open(filePath)
-		if err != nil {
-			return nil, err
-		}
-		defer file.Close()
-
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			line := scanner.Text()
-			number, err := strconv.Atoi(line)
-			if err == nil {
-				numbers = append(numbers, number)
-			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			return nil, err
+	scanner := bufio.NewScanner(data)
+	for scanner.Scan() {
+		line := scanner.Text()
+		number, err := strconv.Atoi(line)
+		if err == nil {
+			// numbers = append(numbers, number)
+			numbers <- number
 		}
 	}
 
-	return numbers, nil
+	if err := scanner.Err(); err != nil {
+		fmt.Println(err)
+		return
+	}
 }
 
 // Consumer
@@ -178,21 +249,39 @@ func isPrime(n int) bool {
 	return true
 }
 
-func minMaxPrimes(primes []int) (int, int) {
-	largestPrime := -1
-	smallestPrime := -1
+func minMaxPrimeschan(primes <-chan int) {
+	// largestPrime := -1
+	// smallestPrime := -1
 
-	for _, prime := range primes {
-		if isPrime(prime) {
-			// fmt.Println("Found prime:", prime)
-			if largestPrime == -1 || prime > largestPrime {
-				largestPrime = prime
-			}
-			if smallestPrime == -1 || prime < smallestPrime {
-				smallestPrime = prime
-			}
+	for prime := range primes {
+		// fmt.Println("Found prime:", prime)
+		largestPrimeMutex.Lock()
+		smallestPrimeMutex.Lock()
+		if largestPrime == -1 || prime > largestPrime {
+			largestPrime = prime
 		}
-	}
+		if smallestPrime == -1 || prime < smallestPrime {
+			smallestPrime = prime
 
-	return largestPrime, smallestPrime
+		}
+		largestPrimeMutex.Unlock()
+		smallestPrimeMutex.Unlock()
+	}
 }
+
+
+// func minMaxPrimes(primes []int) (int, int) {
+// 	largestPrime := -1
+// 	smallestPrime := -1
+
+// 	for prime := range primes {
+// 		if largestPrime == -1 || prime > largestPrime {
+// 			largestPrime = prime
+// 		}
+// 		if smallestPrime == -1 || prime < smallestPrime {
+// 			smallestPrime = prime
+// 		}
+// 	}
+
+// 	return largestPrime, smallestPrime
+// }
