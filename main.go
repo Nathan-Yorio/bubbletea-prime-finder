@@ -83,21 +83,25 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync/atomic"
 	// "os/signal"
 	"strconv"
 	"sync"
 	"bufio"
-	"runtime"
+	// "runtime"
 	// "syscall"
 	// tea "github.com/charmbracelet/bubbletea"
 )
 
 var (
 	numbers = make(chan int)
-	largestPrime = -1
-	largestPrimeMutex sync.Mutex
-	smallestPrime = -1
-	smallestPrimeMutex sync.Mutex
+	// largestPrime = -1
+	// largestPrimeMutex sync.Mutex
+	// smallestPrime = -1
+	// smallestPrimeMutex sync.Mutex
+	smallestPrime int64 = -1
+	largestPrime  int64 = -1
+	primesMutex   sync.Mutex
 )
 
 
@@ -108,91 +112,178 @@ func main() {
 
 	// fmt.Print(files)
 
-	var consumer sync.WaitGroup
-	var producer sync.WaitGroup
-	var primality sync.WaitGroup
+	var wg sync.WaitGroup
+	// var disp sync.WaitGroup
 	primes := make(chan int)
+	fileChannel := make(chan string, 1000) // channel to store the files in buffer 1000
 
+	for _,file := range files {
+		fileChannel <- file
+	}
+	fmt.Print("Closing file channel")
+	close(fileChannel)
 
 	// Define the number of goroutines to use (e.g., 4 for quadrupling)
 	numGoroutines := 5
 
-	// Producer
+	// Workers
+	// Buffered channel, size of numGoRoutines
+	workerPool := make(chan struct{}, numGoroutines)
+	progressChannel := make(chan string, numGoroutines)
+	progressDone := make(chan struct{})
 
-	for _,file := range files {
-		for i := 0; i < numGoroutines; i++ {
-			producer.Add(1)
-			go func(file string) {
-				defer producer.Done()
-				readFiles(file, numbers)
-			}(file)
-		}	
-	}
 
-	go func() {
-		producer.Wait()
-		// close(numbers) //fileChannel
-	}()
-	// Consumer I
-	for i := 0; i < numGoroutines; i++ {
-		consumer.Add(1)
-		go func(workerID int) {
-			defer consumer.Done()
-            for j := workerID; ; j += numGoroutines {
-                // Receive value from the channel, break if the channel is closed
-                number := <-numbers
-				// number, more := <-numbers
-                // if !more {
-                //     break
-                // }
 
-                if isPrime(number) {
-                    primes <- number
+	// // Worker function
+	// worker := func(workerID int) {
+	// 	// fmt.Println("Enter worker function")
+	// 	defer func() {
+	// 		// fmt.Println("Release worker pool slot")
+	// 		<-workerPool // Release the slot in the worker pool
+	// 		wg.Done()
+	// 	}()
+
+	// 	for {
+	// 		// fmt.Println("Check if files remain")
+	// 		filePath, ok := <-fileChannel
+
+	// 		if !ok {
+	// 			// No more files to process
+	// 			break
+	// 		}
+
+	// 		// Process the file
+	// 		// fmt.Println("parsing files")
+	// 		readFiles(filePath, numbers, primes)
+	// 		// fmt.Println("files parsed")
+
+	// 		// Send progress information to the channel
+	// 		fmt.Println(workerID, filePath)
+	// 		progressChannel <- fmt.Sprintf("Worker %d processed file: %s", workerID, filePath)
+	// 	}
+	// }
+
+// Worker function
+worker := func(workerID int) {
+    // fmt.Println("Enter worker function")
+    defer func() {
+        // fmt.Println("Release worker pool slot")
+        <-workerPool // Release the slot in the worker pool
+        wg.Done()
+    }()
+
+    for {
+        select {
+        case filePath, filesOk := <-fileChannel:
+            if !filesOk { // Continue processing primes once files are done
+                select {
+                case prime, primesOk := <-primes:
+                    if !primesOk {
+                        // No more primes to process, exit the loop
+                        return
+                    }
+                    // Process the prime
+                    // fmt.Println(workerID, "Processing prime:", prime)
+					prime64 := int64(prime)
+					updatePrimes(prime64)
                 }
+            } else { // Process Files from channel
+                // Process the file
+                // fmt.Println("parsing files")
+                readFiles(filePath, numbers, primes)
+                // fmt.Println("files parsed")
+
+                // Send progress information to the channel
+                fmt.Println(workerID, filePath)
+                progressChannel <- fmt.Sprintf("Worker %d processed file: %s", workerID, filePath)
             }
-		}(i)
-	}
-
-	go func() {
-		consumer.Wait()
-		// close(primes)
-		// close(numbers) //fileChannel
-	}()
+        }
+    }
+}
 
 
-
-	for i := 0; i < numGoroutines; i++ {
-		primality.Add(1)
-		go func(workerID int) {
-			defer primality.Done()
-            for k := workerID; ; k += numGoroutines {
-			// primeResults := []int{}
-			// primeResults = append(primeResults, prime)
-				minMaxPrimeschan(primes)
-            }
-		}(i)
-	}
-
+	// // Spawn initial goroutines
 	// go func() {
-	// 	close(primes)
-	// 	close(numbers) 
+	// 	fmt.Println("prespawn")
+	// 	for i := 0; i < numGoroutines; i++ {
+	// 		fmt.Println("initial spawn")
+	// 		workerPool <- struct{}{} // Acquire a slot in the worker pool
+	// 		wg.Add(1)				 // Add 1 worker to the pool
+	// 		go worker(i)				 // Set worker to work
+	// 		<-workerPool
+	// 	}
+	// }()
+
+	// // Spawn additional goroutines dynamically
+	// go func() {
+	// 	fmt.Println("pre dynamic-spawn")
+	// 	for {
+	// 		fmt.Println("boye")
+	// 		if len(fileChannel) > 0 {
+	// 			fmt.Println("spawning a boye")
+	// 			workerPool <- struct{}{} // Acquire a slot in the worker pool
+	// 			wg.Add(1)
+	// 			go worker(len(workerPool))
+	// 			<-workerPool
+	// 		} else {
+	// 			// No more files to process
+	// 			break
+	// 		}
+	// 	}
 	// }()
 
 	go func() {
-		primality.Wait()
+		fmt.Println("prespawn")
+		for i := 0; i < numGoroutines || (len(fileChannel) > 0 && i < numGoroutines*2); i++ {
+			fmt.Println("spawn a boye")
+			workerPool <- struct{}{} // Acquire a slot in the worker pool
+			wg.Add(1)                 // Add 1 worker to the pool
+			go worker(i)              // Set worker to work
+			// <-workerPool
+		}
 	}()
 
-	fmt.Println("Largest:", largestPrime, "Smallest:", smallestPrime)
-	routines := runtime.NumGoroutine()
-	fmt.Println("Number of active goroutines:", routines)
+	// fmt.Println("Closing Progress Channel")
+	// close(progressChannel)
+	// fmt.Println("Progress Channel Closed")
+
+	// Create a goroutine to display progress information
+	go func() {
+		fmt.Println("any kind of progress display")
+		defer close(progressDone)
+		for progress := range progressChannel {
+			fmt.Print("Progress:")
+			fmt.Println(progress)
+		}
+	}()
+
+	// Wait for all goroutines to complete
+	// go func(){
+
+	// 	// close(numbers)
+	// 	// close(primes)
+	// 	// close(progressChannel)
+	// }()
+
+	go func() {
+		for prime := range primes {
+			fmt.Println("Received Prime:", prime)
+			// prime := int64(prime)
+			// updatePrimes(prime)
+		// 	// Process the prime number as needed
+		}
+	}()
+	
+
+	fmt.Println("enter async wait")
+	wg.Wait()
+
+	<-progressDone
+	fmt.Println("progress should be done now")
+
+	fmt.Println(primes)
 
 }
-
-// func incrementProgress() {
-// 	processedMutex.Lock()
-// 	numbersProcessed++
-// 	processedMutex.Unlock()
-// }
 
 // 📑 what files are in a given directory
 func getFiles(dirPath string) (the_files []string) {
@@ -204,7 +295,7 @@ func getFiles(dirPath string) (the_files []string) {
 }
 
 // Producer
-func readFiles(file string, nums chan<- int) {
+func readFiles(file string, nums chan<- int, primes chan<- int) {
 	data, err := os.Open(file)
 	if err != nil {
 		fmt.Println(err)
@@ -218,10 +309,17 @@ func readFiles(file string, nums chan<- int) {
 		number, err := strconv.Atoi(line)
 		if err == nil {
 			// numbers = append(numbers, number)
-			numbers <- number
+			// fmt.Println("stashing number", number)
+			// numbers <- number
+			// fmt.Println("number", number, "stashed")
+			if isPrime(number) {
+				// fmt.Println("Stashing Prime:", number)
+				primes <- number
+			}
 		}
 	}
 
+	// fmt.Println("post stash")
 	if err := scanner.Err(); err != nil {
 		fmt.Println(err)
 		return
@@ -249,25 +347,26 @@ func isPrime(n int) bool {
 	return true
 }
 
-func minMaxPrimeschan(primes <-chan int) {
-	// largestPrime := -1
-	// smallestPrime := -1
+// func minMaxPrimeschan(primes <-chan int) {
+// 	// largestPrime := -1
+// 	// smallestPrime := -1
 
-	for prime := range primes {
-		// fmt.Println("Found prime:", prime)
-		largestPrimeMutex.Lock()
-		smallestPrimeMutex.Lock()
-		if largestPrime == -1 || prime > largestPrime {
-			largestPrime = prime
-		}
-		if smallestPrime == -1 || prime < smallestPrime {
-			smallestPrime = prime
+// 	for prime := range primes {
+// 		// fmt.Println("Found prime:", prime)
+// 		largestPrimeMutex.Lock()
+// 		smallestPrimeMutex.Lock()
+// 		if largestPrime == -1 || prime > largestPrime {
+// 			largestPrime = prime
+// 			// fmt.Print(largestPrime)
+// 		}
+// 		if smallestPrime == -1 || prime < smallestPrime {
+// 			smallestPrime = prime
 
-		}
-		largestPrimeMutex.Unlock()
-		smallestPrimeMutex.Unlock()
-	}
-}
+// 		}
+// 		largestPrimeMutex.Unlock()
+// 		smallestPrimeMutex.Unlock()
+// 	}
+// }
 
 
 // func minMaxPrimes(primes []int) (int, int) {
@@ -285,3 +384,36 @@ func minMaxPrimeschan(primes <-chan int) {
 
 // 	return largestPrime, smallestPrime
 // }
+
+func updatePrimes(prime int64) {
+	primesMutex.Lock()
+	defer primesMutex.Unlock()
+	// Update smallestPrime
+	for {
+	
+		currentSmallest := atomic.LoadInt64(&smallestPrime)
+		if currentSmallest == -1 || prime < currentSmallest {
+			fmt.Println("debug")
+			
+			if atomic.CompareAndSwapInt64(&smallestPrime, currentSmallest, prime) {
+				fmt.Println(smallestPrime)
+				break
+			}
+		} else {
+			break
+		}
+	}
+
+	// Update largestPrime
+	for {
+		currentLargest := atomic.LoadInt64(&largestPrime)
+		if currentLargest == -1 || prime > currentLargest {
+			if atomic.CompareAndSwapInt64(&largestPrime, currentLargest, prime) {
+				fmt.Println(largestPrime)
+				break
+			}
+		} else {
+			break
+		}
+	}
+}
