@@ -14,14 +14,11 @@ import (
 )
 
 var (
-	// largestPrime = -1
-	// largestPrimeMutex sync.Mutex
-	// smallestPrime = -1
-	// smallestPrimeMutex sync.Mutex
 	smallestPrime int64 = -1
 	largestPrime  int64 = -1
 	primesMutex   sync.Mutex
 	workersSpawned bool
+	primes = make(chan int)
 )
 
 func main() {
@@ -30,14 +27,6 @@ func main() {
 
 	files := getFiles(dirPath)
 
-	// fmt.Print(files)
-
-	// numbers, err := readFiles(files)
-	// if err != nil {
-	// 	fmt.Println("Error reading files:", err)
-	// 	os.Exit(1)
-	// }
-
 	fileChannel := make(chan string, 1000) // channel to store the files in buffer 1000
 	for _,file := range files {
 		fileChannel <- file
@@ -45,8 +34,8 @@ func main() {
 	fmt.Print("Closing file channel")
 	// close(fileChannel)
 
-	// Define the number of goroutines to use (e.g., 4 for quadrupling)
-	numGoroutines := 2
+	// Define the number of goroutines to use (e.g., 4 for quadrupling throughput (limited severely by IOPs))
+	numGoroutines := 1
 
 	var fileGroup sync.WaitGroup
 
@@ -62,7 +51,6 @@ func main() {
 					filesDone = true
 					return
 				} 
-				// fmt.Print(numbers)
 
 				numbers, err := readFiles(filePath)
 				if err != nil {
@@ -70,18 +58,10 @@ func main() {
 					os.Exit(1)
 				}
 
-				primes := []int{}
+				
 				for _, number := range numbers {
 					if isPrime(number) == true {
-						prime := number
-						primes = append(primes, prime)
-						// fmt.Println(primes)
-						for _, prime := range primes {
-							prime64 := int64(prime)
-							updatePrimes(prime64)
-							fmt.Print("\033[H\033[2J")
-							fmt.Println("largest:", largestPrime, "smallest:", smallestPrime)
-						}
+						primes <- number		// stash the primes in a channel for reading later
 					}
 				}
 				fmt.Println("Worker:", id, "Processing", filePath)
@@ -91,24 +71,29 @@ func main() {
 
 	// go func() {
 
-		if workersSpawned == false {
-			for i := 0; i < numGoroutines; i++ {
-				fmt.Println("spawn a file worker")
-				fileGroup.Add(1)
-				go workers(i, fileChannel, &fileGroup)
-				fmt.Println("File Worker spawned")
-				workersSpawned = true
-			}
+	if workersSpawned == false {
+		for i := 0; i < numGoroutines; i++ {
+			fmt.Println("spawn a file worker")
+			fileGroup.Add(1)
+			go workers(i, fileChannel, &fileGroup)
+			fmt.Println("File Worker spawned")
+			workersSpawned = true
 		}
+	}
 
-	// 	// close(fileChannel)
-	// }()
+	// Asynchronously read the primes out of the channel while the other function is writing them in
+	go func () {
+		for prime := range primes {
+			prime64 := int64(prime)
+			updatePrimes(prime64)
+			fmt.Print("\033[H\033[2J")
+			fmt.Println("largest:", largestPrime, "smallest:", smallestPrime)
+		}
+	}()
 
-	// go func() {
-		fmt.Println("Entering await")
-		fileGroup.Wait()
-		close(fileChannel)
-	// }()
+	fileGroup.Wait()
+	// close(fileChannel)
+
 
 	fmt.Println("progress should be done now")
 	fmt.Println(smallestPrime, largestPrime)
@@ -127,9 +112,6 @@ func getFiles(dirPath string) (the_files []string) {
 
 // Producer
 func readFiles(filePath string) ([]int, error) {
-	//Iterate over all the files in the directory given as an input list / array
-	//go into each file and read all of the lines, grabbing each number from each line
-	//this function should return all of the numbers from a single given file
 	var numbers []int
 
 	
@@ -175,25 +157,6 @@ func isPrime(n int) bool {
 		i += 6
 	}
 	return true
-}
-
-func minMaxPrimes(primes []int) (int, int) {
-	largestPrime := -1
-	smallestPrime := -1
-
-	for _, prime := range primes {
-		if isPrime(prime) {
-			// fmt.Println("Found prime:", prime)
-			if largestPrime == -1 || prime > largestPrime {
-				largestPrime = prime
-			}
-			if smallestPrime == -1 || prime < smallestPrime {
-				smallestPrime = prime
-			}
-		}
-	}
-
-	return largestPrime, smallestPrime
 }
 
 func updatePrimes(prime int64) {
